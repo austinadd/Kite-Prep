@@ -987,6 +987,9 @@ html{-webkit-text-size-adjust:100%}
 body{-webkit-tap-highlight-color:transparent}
 button,a,img,svg{-webkit-touch-callout:none}
 button,.tabs,.bar,.btn,.tab{-webkit-user-select:none;user-select:none}
+/* The app draws under the status bar, so start the page below it (the sticky top bars stick there too). */
+body{padding-top:env(safe-area-inset-top,0px)}
+@media (min-width:900px){.bar{padding-top:env(safe-area-inset-top,0px)}}
 </style>
 </head>
 <body>
