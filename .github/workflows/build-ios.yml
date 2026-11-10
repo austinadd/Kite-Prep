@@ -1,0 +1,170 @@
+name: Build iPhone app (unsigned IPA)
+
+# Builds the Xcode project in ios/ on GitHub's free Mac runner without code signing, packs the app
+# into KitePrep-unsigned.ipa, and attaches it to the "ipa" release. Sign and install it with a
+# sideloading tool and your Apple ID (see README). It also opens the app in the iPhone simulator and
+# saves screenshots to the ci-screens branch, as a check that the app really loads.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/build-ios.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-ios
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUNDLE_ID: com.austinadd.kiteprep
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the tools
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: Build and archive (no code signing)
+        working-directory: ios
+        run: |
+          log="$RUNNER_TEMP/archive.log"
+          if ! xcodebuild archive \
+              -project KitePrep.xcodeproj \
+              -scheme KitePrep \
+              -configuration Release \
+              -destination 'generic/platform=iOS' \
+              -archivePath "$RUNNER_TEMP/KitePrep.xcarchive" \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" > "$log" 2>&1; then
+            echo "::group::Errors"
+            grep -E "error:|fatal error|Command .* failed|BUILD FAILED|ARCHIVE FAILED" "$log" | head -80 || true
+            echo "::endgroup::"
+            tail -80 "$log"
+            exit 1
+          fi
+          echo "::group::Warnings"
+          grep -E "warning:" "$log" | sort -u | head -60 || true
+          echo "::endgroup::"
+          tail -3 "$log"
+
+      - name: Package the .ipa
+        run: |
+          app="$RUNNER_TEMP/KitePrep.xcarchive/Products/Applications/KitePrep.app"
+          ls -la "$app"
+          ls -la "$app/web" "$app/web/vendor" "$app/web/fonts"
+          plutil -p "$app/Info.plist" | head -40
+          mkdir -p Payload
+          cp -R "$app" Payload/
+          zip -qq -r -y -9 KitePrep-unsigned.ipa Payload
+          ls -la KitePrep-unsigned.ipa
+
+      - name: Keep the .ipa as a download
+        uses: actions/upload-artifact@v4
+        with:
+          name: KitePrep-unsigned-ipa
+          path: KitePrep-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Open it in the iPhone simulator
+        continue-on-error: true
+        working-directory: ios
+        run: |
+          set -x
+          if ! xcodebuild build \
+              -project KitePrep.xcodeproj \
+              -scheme KitePrep \
+              -configuration Debug \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath "$RUNNER_TEMP/sim" \
+              CODE_SIGNING_ALLOWED=NO > "$RUNNER_TEMP/sim.log" 2>&1; then
+            grep -E "error:" "$RUNNER_TEMP/sim.log" | head -40 || true
+            tail -40 "$RUNNER_TEMP/sim.log"
+            exit 1
+          fi
+          app="$RUNNER_TEMP/sim/Build/Products/Debug-iphonesimulator/KitePrep.app"
+          udid=$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          d = json.load(sys.stdin)["devices"]
+          def ver(k):
+              m = re.search(r"iOS-(\d+)-(\d+)", k)
+              return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+          for k in sorted((k for k in d if "iOS" in k), key=ver, reverse=True):
+              for x in d[k]:
+                  if x["name"].startswith("iPhone"):
+                      print(x["udid"]); sys.exit()
+          ')
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl ui "$udid" appearance light
+          xcrun simctl install "$udid" "$app"
+          shots="$RUNNER_TEMP/shots"; mkdir -p "$shots"
+
+          # 1. first launch: home screen asks for scores
+          xcrun simctl launch "$udid" "$BUNDLE_ID"
+          sleep 25
+          xcrun simctl io "$udid" screenshot "$shots/1-first-launch.png"
+
+          # 2. dark mode
+          xcrun simctl ui "$udid" appearance dark
+          sleep 5
+          xcrun simctl io "$udid" screenshot "$shots/2-dark-mode.png"
+          xcrun simctl ui "$udid" appearance light
+
+          # 3. save scores like the app does, quit, reopen: the scores should still be there
+          xcrun simctl terminate "$udid" "$BUNDLE_ID"
+          xcrun simctl launch "$udid" "$BUNDLE_ID" -kiteScript "localStorage.setItem('satlab:set', JSON.stringify({me: {rw: 600, math: 610, goal: 1300}})); location.reload();"
+          sleep 15
+          xcrun simctl terminate "$udid" "$BUNDLE_ID"
+          sleep 3
+          xcrun simctl launch "$udid" "$BUNDLE_ID"
+          sleep 15
+          xcrun simctl io "$udid" screenshot "$shots/3-reopened-scores-1210.png"
+
+          # 4. Desmos Lab: play a replay (types into the MathQuill pad and graphs it)
+          xcrun simctl terminate "$udid" "$BUNDLE_ID"
+          xcrun simctl launch "$udid" "$BUNDLE_ID" -kiteScript "document.querySelector('.tabs [data-v=\"desmos\"]').click(); setTimeout(function () { var b = document.querySelector('[data-act=\"dz-demo\"]'); if (b) b.click(); }, 1000);"
+          sleep 30
+          xcrun simctl io "$udid" screenshot "$shots/4-desmos-replay.png"
+          ls -la "$shots"
+
+      - name: Save the simulator screenshots to the ci-screens branch
+        if: always()
+        continue-on-error: true
+        run: |
+          shots="$RUNNER_TEMP/shots"
+          [ -d "$shots" ] && [ -n "$(ls -A "$shots")" ] || { echo "no screenshots"; exit 0; }
+          cp "$RUNNER_TEMP"/*.log "$shots/" 2>/dev/null || true
+          cd "$shots"
+          git init -q -b ci-screens
+          git add .
+          git -c user.name="github-actions[bot]" -c user.email="41898333+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "iPhone simulator screenshots for ${GITHUB_SHA::7}"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-screens
+
+      - name: Attach the .ipa to the "ipa" release
+        run: |
+          if ! gh release view ipa --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create ipa --repo "$GITHUB_REPOSITORY" --target main --title "Kite Prep for iPhone (unsigned IPA)" \
+              --notes "Built by GitHub Actions without code signing. Install it with Sideloadly and your Apple ID (see the README)."
+          fi
+          gh release upload ipa KitePrep-unsigned.ipa --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Keep the build logs if something failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-logs
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore

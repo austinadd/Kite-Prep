@@ -1,0 +1,5 @@
+*.ipa
+Payload/
+ios/build/
+xcuserdata/
+.DS_Store
