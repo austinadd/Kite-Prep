@@ -1,0 +1,13 @@
+name: Probe question bank API (temporary)
+on:
+  push:
+    branches: [cb-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/cb_probe.py
