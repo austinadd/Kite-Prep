@@ -1037,7 +1037,10 @@ body.prac{background:var(--bg)}
 .cbq th,.cbrat th{background:var(--brand-soft);font-weight:650}
 .cbq .left-justified,.cbrat .left-justified{text-align:left}
 .cbq figure,.cbrat figure{margin:.4em 0}
-.cbq svg,.cbrat svg,.cbq img,.cbrat img{max-width:100%;height:auto}
+.cbq img,.cbrat img{max-width:100%;vertical-align:middle}
+.cbq img:not([height]):not([style*=height]),.cbrat img:not([height]):not([style*=height]){height:auto}
+.cbq svg,.cbrat svg{max-width:100%}
+.cbq svg[viewBox],.cbrat svg[viewBox]{height:auto}
 .cbq .sr-only,.cbrat .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .cbq math,.cbrat math{font-size:1.06em}
 .cbq ul,.cbq ol,.cbrat ul,.cbrat ol{margin:.3em 0;padding-left:1.3em}
@@ -1808,10 +1811,12 @@ function cbInit() {
 }
 /* keep every missed or marked question (up to 150) and the 40 most recent others */
 function cbSaveLocal() {
-  const out = {}; let keep = 0, rest = 0;
-  for (const q of cbQs().sort((a, b) => (b.u || 0) - (a.u || 0))) {
-    if ((isMissed(q.id) || isFlag(q.id)) && keep < 150) { out[q.id] = q; keep++; }
-    else if (rest < 40) { out[q.id] = q; rest++; }
+  const must = q => isMissed(q.id) || isFlag(q.id), out = {};
+  let keep = 0, rest = 0, size = 0;
+  for (const q of cbQs().sort((a, b) => (must(b) - must(a)) || ((b.u || 0) - (a.u || 0)))) {
+    const len = JSON.stringify(q).length;
+    if (size + len > 2400000 || (must(q) ? keep >= 150 : rest >= 40)) continue;
+    out[q.id] = q; size += len; if (must(q)) keep++; else rest++;
   }
   lsSet(out, CB_QS);
 }
@@ -1948,10 +1953,46 @@ const CB_TAGS = new Set('p br span div em i strong b u sub sup small ul ol li ta
 const CB_SVG = new Set('svg g path line polyline polygon rect circle ellipse text tspan defs clippath use title desc marker lineargradient radialgradient stop pattern mask symbol'.split(' '));
 const CB_MATH = new Set('math mi mn mo ms mtext mspace mrow mfrac msqrt mroot mstyle merror mpadded mphantom menclose msub msup msubsup munder mover munderover mmultiscripts mprescripts none mtable mtr mtd mlabeledtr semantics annotation mfenced maligngroup malignmark'.split(' '));
 const CB_DROP = new Set('script style iframe object embed form input button select textarea link meta base noscript template foreignobject annotation-xml audio video source frame frameset applet'.split(' '));
-const CB_ATTR = /^(class|style|role|scope|colspan|rowspan|headers|alt|title|width|height|align|valign|aria-[a-z-]+|lang|dir|alttext|display|displaystyle|mathvariant|mathsize|mathcolor|scriptlevel|linethickness|bevelled|numalign|denomalign|stretchy|fence|separator|form|lspace|rspace|accent|accentunder|movablelimits|largeop|symmetric|minsize|maxsize|columnalign|rowalign|columnspan|rowspacing|columnspacing|frame|notation|depth|voffset|open|close|separators|viewbox|xmlns|xmlns:xlink|d|x|y|x1|x2|y1|y2|cx|cy|r|rx|ry|points|transform|fill|fill-opacity|fill-rule|stroke|stroke-width|stroke-opacity|stroke-dasharray|stroke-linecap|stroke-linejoin|stroke-miterlimit|opacity|font-size|font-family|font-weight|font-style|text-anchor|dominant-baseline|dx|dy|offset|stop-color|stop-opacity|gradientunits|gradienttransform|patternunits|clip-path|clippathunits|marker-start|marker-end|marker-mid|markerwidth|markerheight|refx|refy|orient|preserveaspectratio|vector-effect|id|href|xlink:href|src|border|start|type|span)$/;
+const CB_ATTR = /^(class|style|role|scope|colspan|rowspan|headers|alt|title|width|height|align|valign|aria-[a-z-]+|lang|dir|alttext|display|displaystyle|mathvariant|mathsize|mathcolor|scriptlevel|linethickness|bevelled|numalign|denomalign|stretchy|fence|separator|form|lspace|rspace|accent|accentunder|movablelimits|largeop|symmetric|minsize|maxsize|columnalign|rowalign|columnspan|rowspacing|columnspacing|frame|notation|depth|voffset|open|close|separators|viewbox|xmlns|xmlns:xlink|d|x|y|x1|x2|y1|y2|cx|cy|r|rx|ry|points|transform|fill|fill-opacity|fill-rule|stroke|stroke-width|stroke-opacity|stroke-dasharray|stroke-linecap|stroke-linejoin|stroke-miterlimit|opacity|font-size|font-family|font-weight|font-style|text-anchor|dominant-baseline|dx|dy|offset|stop-color|stop-opacity|gradientunits|gradienttransform|patternunits|clip-path|clippathunits|marker-start|marker-end|marker-mid|markerwidth|markerheight|markerunits|refx|refy|orient|preserveaspectratio|vector-effect|patterntransform|xml:space|id|href|xlink:href|src|border|start|type|span)$/;
+const CB_CLS = { italic: 'font-style:italic', para_center: 'text-align:center', para_right: 'text-align:right', 'align:right': 'text-align:right', 'align:center': 'text-align:center', 'valign:middle': 'vertical-align:middle' };
+const CB_BADURL = /url\s*\(\s*['"]?\s*(?!#)/i;
+/* keep only safe CSS declarations; url() may only point inside the figure (#id) */
+function cbCss(v) {
+  return String(v || '').split(';').map(d => d.trim()).filter(d => /^[\w-]+\s*:/.test(d) && !/expression|javascript:|@import|behavio|^position\s*:/i.test(d) && !CB_BADURL.test(d)).join(';');
+}
+/* A graph's own <style> rules become inline styles (so its look survives without leaking CSS into the app), and its
+   ids get their own prefix so two graphs on one screen can't borrow each other's clip paths or glyphs. */
+function cbSvgFix(svg) {
+  const rules = [];
+  for (const st of Array.from(svg.getElementsByTagName('style'))) {
+    String(st.textContent || '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/@[^{;]+\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '').replace(/@[^{;]+;/g, '')
+      .replace(/([^{}]+)\{([^{}]*)\}/g, (m, sel, body) => { rules.push([sel.trim(), cbCss(body)]); return ''; });
+    st.remove();
+  }
+  const acc = new Map();
+  for (const [sel, body] of rules) {
+    if (!body) continue;
+    for (const one of sel.split(',')) {
+      let els = []; try { els = Array.from(svg.querySelectorAll(one.trim())); } catch (e) { continue; }
+      for (const el of els) acc.set(el, (acc.get(el) || '') + body + ';');
+    }
+  }
+  for (const [el, css] of acc) el.setAttribute('style', css + (el.getAttribute('style') || ''));
+  const pfx = 'k' + Math.random().toString(36).slice(2, 7) + '_', ids = new Set();
+  for (const el of Array.from(svg.querySelectorAll('[id]'))) { ids.add(el.id); el.id = pfx + el.id; }
+  const fix = v => v.replace(/url\(\s*(['"]?)#([^'")\s]+)\1\s*\)/g, (m, q, id) => ids.has(id) ? 'url(#' + pfx + id + ')' : m);
+  for (const el of [svg].concat(Array.from(svg.querySelectorAll('*')))) {
+    for (const at of Array.from(el.attributes)) {
+      const n = at.name.toLowerCase(), v = at.value;
+      if ((n === 'href' || n === 'xlink:href') && v.charAt(0) === '#' && ids.has(v.slice(1))) el.setAttribute(at.name, '#' + pfx + v.slice(1));
+      else if (v.indexOf('url(') >= 0) el.setAttribute(at.name, fix(v));
+    }
+  }
+}
 function cbClean(html) {
   html = String(html == null ? '' : html); if (!/\S/.test(html)) return '';
   let doc; try { doc = new DOMParser().parseFromString('<!DOCTYPE html><body>' + html, 'text/html'); } catch (e) { return esc(html.replace(/<[^>]+>/g, ' ')); }
+  for (const svg of Array.from(doc.body.getElementsByTagName('svg'))) { try { cbSvgFix(svg); } catch (e) { /* keep going */ } }
   const walk = el => {
     for (const c of Array.from(el.childNodes)) {
       if (c.nodeType === 3) continue;
@@ -1966,15 +2007,18 @@ function cbClean(html) {
         if (keep && (n === 'href' || n === 'xlink:href')) keep = v.charAt(0) === '#';
         if (keep && n === 'src') keep = tag === 'img' && /^(data:image\/(png|jpe?g|gif|webp|svg\+xml)[;,]|https:\/\/([\w-]+\.)*collegeboard\.org\/)/i.test(v);
         if (keep && n === 'style') {
-          const sv = v.replace(/(^|;)\s*position\s*:[^;]*/gi, '$1');
-          keep = !/url\s*\(|expression|javascript:|@import|behavio/i.test(sv);
-          if (keep && sv !== v) { c.setAttribute(at.name, sv); continue; }
+          const sv = cbCss(v);
+          if (sv) { if (sv !== v) c.setAttribute(at.name, sv); continue; }
+          keep = false;
         }
         if (keep && n === 'class') {
-          const cl = v.split(/\s+/).filter(x => x === 'sr-only' || x === 'left-justified').join(' ');
+          const parts = v.split(/\s+/), extra = parts.map(x => CB_CLS[x]).filter(Boolean).join(';');
+          if (extra) c.setAttribute('style', extra + ';' + (c.getAttribute('style') || ''));
+          const cl = parts.filter(x => x === 'sr-only' || x === 'left-justified').join(' ');
           if (cl) { if (cl !== v) c.setAttribute('class', cl); continue; }
           keep = false;
         }
+        if (keep && n !== 'style' && CB_BADURL.test(v)) keep = false;
         if (!keep) c.removeAttribute(at.name);
       }
       if (tag === 'img' && !c.getAttribute('src')) c.remove();

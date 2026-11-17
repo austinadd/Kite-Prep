@@ -2,8 +2,6 @@
 
 SAT and PERT practice: a Bluebook-style question bank, a Desmos Lab with replays and a practice pad, animated videos for every math question, PERT test-day prep, and word cards. Your progress, scores, and test date stay on your device.
 
-The Official tab in Practice loads real questions, with explanations, from College Board's free SAT Suite Question Bank. They come straight from College Board when you ask for them; none of them are stored in this repo. The Strategies page summarizes methods from [James Lu SAT](https://www.youtube.com/@JamesLuSAT) on YouTube and links his videos. Kite Prep isn't connected to College Board or James Lu.
-
 ## iPhone app
 
 GitHub's free Mac runners build an **unsigned** `.ipa` from the Xcode project in `ios/` (see `.github/workflows/build-ios.yml`). It is attached to the **ipa** release:
