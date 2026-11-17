@@ -3,7 +3,8 @@ name: Build iPhone app (unsigned IPA)
 # Builds the Xcode project in ios/ on GitHub's free Mac runner without code signing, packs the app
 # into KitePrep-unsigned.ipa, and attaches it to the "ipa" release. Sign and install it with a
 # sideloading tool and your Apple ID (see README). It also opens the app in the iPhone simulator and
-# saves screenshots to the ci-screens branch, as a check that the app really loads.
+# saves screenshots to the ci-screens branch, as a check that the app really loads (including official questions
+# from College Board in the Official tab).
 
 on:
   workflow_dispatch:
@@ -137,6 +138,16 @@ jobs:
           xcrun simctl launch "$udid" "$BUNDLE_ID" -kiteScript "document.querySelector('.tabs [data-v=\"desmos\"]').click(); setTimeout(function () { var b = document.querySelector('[data-act=\"dz-demo\"]'); if (b) b.click(); }, 1000);"
           sleep 30
           xcrun simctl io "$udid" screenshot "$shots/4-desmos-replay.png"
+
+          # 5-6. Official tab: load real SAT questions from College Board's question bank (through the app's
+          # kiteNet bridge), then answer one so its College Board explanation shows
+          xcrun simctl terminate "$udid" "$BUNDLE_ID"
+          official='(function(){var q=function(s){return document.querySelector(s)};var c=function(s){var e=q(s);if(e)e.click();return !!e};c(".tabs [data-v=bank]");setTimeout(function(){c(".hub [data-v=cb]");var n=0,t=setInterval(function(){var b=q("[data-act=cb-go]");if(b&&!b.disabled){clearInterval(t);b.click()}if(++n>80)clearInterval(t)},500)},800);var m=0,u=setInterval(function(){if(q(".pbody")){clearInterval(u);setTimeout(function(){if(!c(".ch")){var i=q("#spr-in");if(i){i.value="1";i.dispatchEvent(new Event("input",{bubbles:true}))}}setTimeout(function(){c("[data-act=check]");setTimeout(function(){var v=q(".verdict");if(v)window.scrollTo(0,v.getBoundingClientRect().top+window.scrollY-140)},700)},600)},14000)}if(++m>160)clearInterval(u)},500)})();'
+          xcrun simctl launch "$udid" "$BUNDLE_ID" -kiteScript "$official"
+          sleep 22
+          xcrun simctl io "$udid" screenshot "$shots/5-official-question.png"
+          sleep 14
+          xcrun simctl io "$udid" screenshot "$shots/6-official-checked.png"
           ls -la "$shots"
 
       - name: Save the simulator screenshots to the ci-screens branch

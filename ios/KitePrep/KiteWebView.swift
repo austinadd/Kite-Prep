@@ -7,7 +7,8 @@ import WebKit
 ///
 /// The files are served through a custom URL scheme (kiteprep://app/...) instead of file:// URLs, so the
 /// page has one stable origin. That keeps its saved progress (localStorage) between launches, and it lets the
-/// Desmos pad load its scripts. Nothing comes from the internet, so the app works offline.
+/// Desmos pad load its scripts. Everything ships in the app, so it works offline. The one exception is the
+/// Official tab, which asks College Board's question bank for real SAT questions through `NetBridge`.
 struct KiteWebView: UIViewRepresentable {
     static let scheme = "kiteprep"
     static let startURL = URL(string: "kiteprep://app/index.html")!
@@ -23,8 +24,11 @@ struct KiteWebView: UIViewRepresentable {
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.dataDetectorTypes = []
+        let net = NetBridge()
+        config.userContentController.add(net, name: "kiteNet")
 
         let web = WKWebView(frame: .zero, configuration: config)
+        net.webView = web
         web.navigationDelegate = context.coordinator
         web.uiDelegate = context.coordinator
         web.isOpaque = false
@@ -130,7 +134,7 @@ struct KiteWebView: UIViewRepresentable {
         }
 
         #if DEBUG
-        // Test hook for the simulator check in GitHub Actions: `-kiteScript "<js>"` runs once after the page loads.
+        // Test hook for the simulator checks in GitHub Actions: `-kiteScript "<js>"` runs once after the page loads.
         private var ranTestScript = false
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -141,5 +145,50 @@ struct KiteWebView: UIViewRepresentable {
             }
         }
         #endif
+    }
+}
+
+/// Lets the page fetch official SAT questions from College Board's free question bank (the Official tab in
+/// Practice). The page posts `{id, url, method, body}` to `window.webkit.messageHandlers.kiteNet`, and the reply
+/// comes back through `window.__kiteNet([id, status, text, error])`. Only these two College Board hosts are allowed.
+@MainActor
+final class NetBridge: NSObject, WKScriptMessageHandler {
+    weak var webView: WKWebView?
+    private static let hosts: Set<String> = ["qbank-api.collegeboard.org", "saic.collegeboard.org"]
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any], let id = (body["id"] as? NSNumber)?.intValue else { return }
+        guard let text = body["url"] as? String, let url = URL(string: text), url.scheme == "https",
+              let host = url.host, Self.hosts.contains(host) else {
+            finish(id: id, status: 0, text: "", error: "That address isn't allowed.")
+            return
+        }
+        var request = URLRequest(url: url, timeoutInterval: 25)
+        if (body["method"] as? String) == "POST" {
+            request.httpMethod = "POST"
+            request.httpBody = Data(((body["body"] as? String) ?? "").utf8)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        let send = request
+        Task { [weak self] in
+            var status = 0
+            var reply = ""
+            var failure = ""
+            do {
+                let (data, response) = try await URLSession.shared.data(for: send)
+                status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                reply = String(decoding: data, as: UTF8.self)
+            } catch {
+                failure = error.localizedDescription.isEmpty ? "network error" : error.localizedDescription
+            }
+            self?.finish(id: id, status: status, text: reply, error: failure)
+        }
+    }
+
+    private func finish(id: Int, status: Int, text: String, error: String) {
+        let payload: [Any] = [id, status, text, error]
+        guard let json = try? JSONSerialization.data(withJSONObject: payload),
+              let args = String(data: json, encoding: .utf8) else { return }
+        webView?.evaluateJavaScript("window.__kiteNet && window.__kiteNet(" + args + ")", completionHandler: nil)
     }
 }
